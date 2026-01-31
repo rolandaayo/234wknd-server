@@ -13,6 +13,7 @@ const sponsorRoutes = require("./routes/sponsorRoutes");
 const paymentRoutes = require("./routes/payments");
 const adminRoutes = require("./routes/admin");
 const contactRoutes = require("./routes/contact");
+const authRoutes = require("./routes/auth");
 
 const app = express();
 const server = http.createServer(app);
@@ -34,6 +35,7 @@ app.use("/api/sponsors", sponsorRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/contact", contactRoutes);
+app.use("/api/auth", authRoutes);
 
 // Socket.IO connection handling
 io.on("connection", (socket) => {
