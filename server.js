@@ -15,6 +15,8 @@ const adminRoutes = require("./routes/admin");
 const contactRoutes = require("./routes/contact");
 const authRoutes = require("./routes/auth");
 const eventRoutes = require("./routes/events");
+const merchRoutes = require("./routes/merch");
+const ticketEventRoutes = require("./routes/ticketEvents");
 
 const app = express();
 const server = http.createServer(app);
@@ -38,6 +40,8 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/contact", contactRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/events", eventRoutes);
+app.use("/api/merch", merchRoutes);
+app.use("/api/ticket-events", ticketEventRoutes);
 
 // Socket.IO connection handling
 io.on("connection", (socket) => {
