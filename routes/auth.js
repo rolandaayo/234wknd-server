@@ -148,6 +148,7 @@ router.post("/login", async (req, res) => {
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
+        isAdmin: user.isAdmin || false,
       },
     });
   } catch (error) {
@@ -161,11 +162,12 @@ router.post("/login", async (req, res) => {
 // Get current user profile
 router.get("/profile", authenticateToken, async (req, res) => {
   try {
+    const { ObjectId } = require("mongodb");
     const db = getDB();
     const users = db.collection("users");
 
     const user = await users.findOne(
-      { _id: req.user.userId },
+      { _id: new ObjectId(req.user.userId) },
       { projection: { password: 0 } },
     );
 
@@ -181,6 +183,7 @@ router.get("/profile", authenticateToken, async (req, res) => {
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
+        isAdmin: user.isAdmin || false,
         createdAt: user.createdAt,
       },
     });
@@ -203,11 +206,12 @@ router.put("/profile", authenticateToken, async (req, res) => {
       });
     }
 
+    const { ObjectId } = require("mongodb");
     const db = getDB();
     const users = db.collection("users");
 
     const result = await users.updateOne(
-      { _id: req.user.userId },
+      { _id: new ObjectId(req.user.userId) },
       {
         $set: {
           firstName,
@@ -243,6 +247,29 @@ router.get("/verify", authenticateToken, (req, res) => {
       email: req.user.email,
     },
   });
+});
+
+// Make a user admin (only callable by existing admins or via secret key)
+router.post("/make-admin", async (req, res) => {
+  try {
+    const { email, secretKey } = req.body;
+    if (secretKey !== (process.env.ADMIN_SECRET || "234wknd-admin-secret")) {
+      return res.status(403).json({ error: "Invalid secret key" });
+    }
+    const db = getDB();
+    const users = db.collection("users");
+    const result = await users.updateOne(
+      { email: email.toLowerCase() },
+      { $set: { isAdmin: true, updatedAt: new Date() } },
+    );
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    res.json({ message: `${email} is now an admin` });
+  } catch (error) {
+    console.error("Make admin error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 module.exports = router;
