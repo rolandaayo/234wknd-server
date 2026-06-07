@@ -2,6 +2,7 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { getDB } = require("../utils/mongodb");
+const { sendOTPEmail } = require("../utils/mailer");
 const router = express.Router();
 
 // Middleware to verify JWT token
@@ -26,6 +27,103 @@ const authenticateToken = (req, res, next) => {
   );
 };
 
+// Send OTP to email
+router.post("/send-otp", async (req, res) => {
+  try {
+    const { email, firstName } = req.body;
+
+    if (!email || !firstName) {
+      return res
+        .status(400)
+        .json({ error: "Email and first name are required" });
+    }
+
+    const db = getDB();
+    const users = db.collection("users");
+    const verifications = db.collection("email_verifications");
+
+    // Check if email is already registered
+    const existingUser = await users.findOne({ email: email.toLowerCase() });
+    if (existingUser) {
+      return res
+        .status(400)
+        .json({ error: "User with this email already exists" });
+    }
+
+    // Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    // Upsert verification record (one per email at a time)
+    await verifications.updateOne(
+      { email: email.toLowerCase() },
+      {
+        $set: {
+          email: email.toLowerCase(),
+          otp,
+          expiresAt,
+          verified: false,
+          createdAt: new Date(),
+        },
+      },
+      { upsert: true },
+    );
+
+    // Send email
+    await sendOTPEmail(email, firstName, otp);
+
+    res.json({ message: "Verification code sent to your email" });
+  } catch (error) {
+    console.error("Send OTP error:", error);
+    res.status(500).json({ error: "Failed to send verification code" });
+  }
+});
+
+// Verify OTP
+router.post("/verify-otp", async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({ error: "Email and code are required" });
+    }
+
+    const db = getDB();
+    const verifications = db.collection("email_verifications");
+
+    const record = await verifications.findOne({ email: email.toLowerCase() });
+
+    if (!record) {
+      return res
+        .status(400)
+        .json({ error: "No verification code found for this email" });
+    }
+
+    if (new Date() > new Date(record.expiresAt)) {
+      return res
+        .status(400)
+        .json({
+          error: "Verification code has expired. Please request a new one.",
+        });
+    }
+
+    if (record.otp !== otp.toString()) {
+      return res.status(400).json({ error: "Invalid verification code" });
+    }
+
+    // Mark as verified
+    await verifications.updateOne(
+      { email: email.toLowerCase() },
+      { $set: { verified: true } },
+    );
+
+    res.json({ message: "Email verified successfully" });
+  } catch (error) {
+    console.error("Verify OTP error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // Register new user
 router.post("/register", async (req, res) => {
   try {
@@ -33,31 +131,39 @@ router.post("/register", async (req, res) => {
 
     // Validation
     if (!email || !password || !firstName || !lastName) {
-      return res.status(400).json({
-        error: "All fields are required",
-      });
+      return res.status(400).json({ error: "All fields are required" });
     }
 
     if (password.length < 6) {
-      return res.status(400).json({
-        error: "Password must be at least 6 characters long",
-      });
+      return res
+        .status(400)
+        .json({ error: "Password must be at least 6 characters long" });
     }
 
     const db = getDB();
     const users = db.collection("users");
+    const verifications = db.collection("email_verifications");
+
+    // Check email was verified
+    const verification = await verifications.findOne({
+      email: email.toLowerCase(),
+    });
+    if (!verification || !verification.verified) {
+      return res
+        .status(400)
+        .json({ error: "Email not verified. Please verify your email first." });
+    }
 
     // Check if user already exists
     const existingUser = await users.findOne({ email: email.toLowerCase() });
     if (existingUser) {
-      return res.status(400).json({
-        error: "User with this email already exists",
-      });
+      return res
+        .status(400)
+        .json({ error: "User with this email already exists" });
     }
 
     // Hash password
-    const saltRounds = 10;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
+    const hashedPassword = await bcrypt.hash(password, 10);
 
     // Create user
     const newUser = {
@@ -65,18 +171,19 @@ router.post("/register", async (req, res) => {
       password: hashedPassword,
       firstName,
       lastName,
+      emailVerified: true,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
 
     const result = await users.insertOne(newUser);
 
+    // Clean up verification record
+    await verifications.deleteOne({ email: email.toLowerCase() });
+
     // Generate JWT token
     const token = jwt.sign(
-      {
-        userId: result.insertedId,
-        email: email.toLowerCase(),
-      },
+      { userId: result.insertedId, email: email.toLowerCase() },
       process.env.JWT_SECRET || "your-secret-key",
       { expiresIn: "7d" },
     );
@@ -93,9 +200,7 @@ router.post("/register", async (req, res) => {
     });
   } catch (error) {
     console.error("Registration error:", error);
-    res.status(500).json({
-      error: "Internal server error",
-    });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -104,38 +209,25 @@ router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Validation
     if (!email || !password) {
-      return res.status(400).json({
-        error: "Email and password are required",
-      });
+      return res.status(400).json({ error: "Email and password are required" });
     }
 
     const db = getDB();
     const users = db.collection("users");
 
-    // Find user
     const user = await users.findOne({ email: email.toLowerCase() });
     if (!user) {
-      return res.status(401).json({
-        error: "Invalid email or password",
-      });
+      return res.status(401).json({ error: "Invalid email or password" });
     }
 
-    // Check password
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
-      return res.status(401).json({
-        error: "Invalid email or password",
-      });
+      return res.status(401).json({ error: "Invalid email or password" });
     }
 
-    // Generate JWT token
     const token = jwt.sign(
-      {
-        userId: user._id,
-        email: user.email,
-      },
+      { userId: user._id, email: user.email },
       process.env.JWT_SECRET || "your-secret-key",
       { expiresIn: "7d" },
     );
@@ -153,9 +245,7 @@ router.post("/login", async (req, res) => {
     });
   } catch (error) {
     console.error("Login error:", error);
-    res.status(500).json({
-      error: "Internal server error",
-    });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -172,9 +262,7 @@ router.get("/profile", authenticateToken, async (req, res) => {
     );
 
     if (!user) {
-      return res.status(404).json({
-        error: "User not found",
-      });
+      return res.status(404).json({ error: "User not found" });
     }
 
     res.json({
@@ -189,9 +277,7 @@ router.get("/profile", authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error("Profile fetch error:", error);
-    res.status(500).json({
-      error: "Internal server error",
-    });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -201,9 +287,9 @@ router.put("/profile", authenticateToken, async (req, res) => {
     const { firstName, lastName } = req.body;
 
     if (!firstName || !lastName) {
-      return res.status(400).json({
-        error: "First name and last name are required",
-      });
+      return res
+        .status(400)
+        .json({ error: "First name and last name are required" });
     }
 
     const { ObjectId } = require("mongodb");
@@ -212,29 +298,17 @@ router.put("/profile", authenticateToken, async (req, res) => {
 
     const result = await users.updateOne(
       { _id: new ObjectId(req.user.userId) },
-      {
-        $set: {
-          firstName,
-          lastName,
-          updatedAt: new Date(),
-        },
-      },
+      { $set: { firstName, lastName, updatedAt: new Date() } },
     );
 
     if (result.matchedCount === 0) {
-      return res.status(404).json({
-        error: "User not found",
-      });
+      return res.status(404).json({ error: "User not found" });
     }
 
-    res.json({
-      message: "Profile updated successfully",
-    });
+    res.json({ message: "Profile updated successfully" });
   } catch (error) {
     console.error("Profile update error:", error);
-    res.status(500).json({
-      error: "Internal server error",
-    });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -242,14 +316,11 @@ router.put("/profile", authenticateToken, async (req, res) => {
 router.get("/verify", authenticateToken, (req, res) => {
   res.json({
     valid: true,
-    user: {
-      userId: req.user.userId,
-      email: req.user.email,
-    },
+    user: { userId: req.user.userId, email: req.user.email },
   });
 });
 
-// Make a user admin (only callable by existing admins or via secret key)
+// Make a user admin
 router.post("/make-admin", async (req, res) => {
   try {
     const { email, secretKey } = req.body;
