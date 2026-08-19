@@ -37,34 +37,11 @@ The +234WKND server handles all API requests for:
 
 ## Local Setup
 
-1. Install dependencies
-
 ```bash
 npm install
-```
-
-2. Create a .env file
-```
-
-3. Start the development server
-
-```bash
 npm run dev
 ```
 
-4. The server will run on:
-
-```text
-http://localhost:3001
-```
-
-## Health Check
-
-```http
-GET /health
-```
-
-Returns the server status and confirms the API is running.
 
 ## API Overview
 
