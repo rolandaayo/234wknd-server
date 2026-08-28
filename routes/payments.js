@@ -1,10 +1,13 @@
 const express = require("express");
 const axios = require("axios");
 const QRCode = require("qrcode");
+const { ObjectId } = require("mongodb");
 const {
+  getDB,
   saveBooking,
   savePayment,
   saveTicket,
+  getTicketByReference,
   getBookingByReference,
   updateBookingStatus,
 } = require("../utils/mongodb");
@@ -15,12 +18,34 @@ const router = express.Router();
 // Initialize payment
 router.post("/create-payment", async (req, res) => {
   try {
-    const { email, fullName, phone, eventId, amount } = req.body;
+    const { email, fullName, phone, eventId, quantity = 1 } = req.body;
 
     // Validate required fields
-    if (!email || !fullName || !phone || !eventId || !amount) {
+    if (!email || !fullName || !phone || !eventId) {
       return res.status(400).json({ error: "Missing required fields" });
     }
+
+    const parsedQuantity = Number(quantity);
+    if (!Number.isInteger(parsedQuantity) || parsedQuantity < 1 || parsedQuantity > 10) {
+      return res.status(400).json({ error: "Quantity must be between 1 and 10" });
+    }
+
+    if (!ObjectId.isValid(eventId)) {
+      return res.status(400).json({ error: "Invalid event" });
+    }
+
+    const event = await getDB()
+      .collection("ticketEvents")
+      .findOne({ _id: new ObjectId(eventId) });
+    if (!event) {
+      return res.status(404).json({ error: "Event not found" });
+    }
+
+    const ticketAmount = Number(event.price) * parsedQuantity;
+    if (!Number.isFinite(ticketAmount) || ticketAmount <= 0) {
+      return res.status(400).json({ error: "Event has an invalid price" });
+    }
+    const totalAmount = ticketAmount + 500;
 
     const reference = `234wknd_${eventId}_${Date.now()}`;
 
@@ -29,7 +54,7 @@ router.post("/create-payment", async (req, res) => {
       "https://api.paystack.co/transaction/initialize",
       {
         email,
-        amount: (amount + 500) * 100, // Convert to kobo and add service fee
+        amount: totalAmount * 100,
         currency: "NGN",
         reference,
         callback_url: `${process.env.CLIENT_URL}/payment/success`,
@@ -37,6 +62,10 @@ router.post("/create-payment", async (req, res) => {
           eventId,
           fullName,
           phone,
+          quantity: parsedQuantity,
+          eventTitle: event.title,
+          eventDate: event.date,
+          eventLocation: event.location,
           custom_fields: [
             {
               display_name: "Event ID",
@@ -76,7 +105,8 @@ router.post("/create-payment", async (req, res) => {
         email,
         fullName,
         phone,
-        amount: amount + 500,
+        quantity: parsedQuantity,
+        amount: totalAmount,
         status: "pending",
         paymentStatus: "pending",
       });
@@ -132,6 +162,21 @@ router.get("/verify-payment/:reference", async (req, res) => {
       });
     }
 
+    const booking = await getBookingByReference(reference);
+    if (!booking) {
+      return res.status(404).json({
+        error: "Booking not found",
+        success: false,
+      });
+    }
+
+    if (paymentData.amount !== booking.amount * 100) {
+      return res.status(400).json({
+        error: "Payment amount does not match booking",
+        success: false,
+      });
+    }
+
     // Save payment data to MongoDB
     try {
       await savePayment(paymentData);
@@ -156,11 +201,26 @@ router.get("/verify-payment/:reference", async (req, res) => {
 // Generate and send ticket
 router.post("/generate-ticket", async (req, res) => {
   try {
-    const { paymentReference, email, eventId, fullName } = req.body;
+    const { paymentReference } = req.body;
 
-    if (!paymentReference || !email || !eventId || !fullName) {
+    if (!paymentReference) {
       return res.status(400).json({ error: "Missing required fields" });
     }
+
+    const existingTicket = await getTicketByReference(paymentReference);
+    if (existingTicket) {
+      return res.json({ success: true, ticketId: existingTicket.ticketId });
+    }
+
+    const booking = await getBookingByReference(paymentReference);
+    if (!booking || booking.paymentStatus !== "completed") {
+      return res.status(400).json({ error: "Payment has not been verified" });
+    }
+
+    const { email, eventId, fullName } = booking;
+    const event = await getDB()
+      .collection("ticketEvents")
+      .findOne({ _id: new ObjectId(eventId) });
 
     // Generate unique ticket ID
     const ticketId = `234WKND-${eventId}-${Date.now()}`;
@@ -172,9 +232,10 @@ router.post("/generate-ticket", async (req, res) => {
       fullName,
       email,
       paymentReference,
-      eventTitle: "A Weekend Experience",
-      eventDate: "April 5, 2026",
-      eventLocation: "Amore Garden, Lagos",
+      quantity: booking.quantity || 1,
+      eventTitle: event?.title || "A Weekend Experience",
+      eventDate: event?.date || "",
+      eventLocation: event?.location || "",
       issuedAt: new Date().toISOString(),
     };
 

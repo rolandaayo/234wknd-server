@@ -26,3 +26,9 @@ Express, MongoDB, Socket.IO, JWT, Paystack, Nodemailer
 npm install
 npm run dev
 ```
+
+Set the variables in `.env` before starting the server. Paystack secrets stay
+on the server; the client only needs `NEXT_PUBLIC_API_URL` pointing at this
+API. Set `CLIENT_URL` to the deployed client URL so Paystack returns to
+`/payment/success`. Use `sk_test_...` while testing, then replace it with the
+Paystack live secret when the production domain and webhook settings are ready.
