@@ -11,7 +11,9 @@ const connectDB = async () => {
 
     client = new MongoClient(process.env.MONGODB_URI);
     await client.connect();
-    db = client.db("234wknd");
+    // Use the database name from the URI (e.g. "WKND" in the Atlas connection string).
+    // client.db() with no argument returns the default DB specified in the URI path.
+    db = client.db();
 
     console.log("Connected to MongoDB successfully");
     return db;

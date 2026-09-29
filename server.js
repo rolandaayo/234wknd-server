@@ -20,15 +20,37 @@ const ticketEventRoutes = require("./routes/ticketEvents");
 
 const app = express();
 const server = http.createServer(app);
+
+// Allowed origins: support multiple comma-separated values in CLIENT_URL
+const rawOrigins = (process.env.CLIENT_URL || "http://localhost:3000")
+  .split(",")
+  .map((o) => o.trim());
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow server-to-server requests (no origin) and listed origins
+    if (!origin || rawOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error(`CORS: origin ${origin} not allowed`));
+    }
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+};
+
 const io = socketIo(server, {
   cors: {
-    origin: process.env.CLIENT_URL || "http://localhost:3000",
+    origin: rawOrigins,
     methods: ["GET", "POST"],
+    credentials: true,
   },
 });
 
 // Middleware
-app.use(cors());
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions)); // pre-flight for all routes
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -93,9 +115,30 @@ app.get("/health", (req, res) => {
 
 const PORT = process.env.PORT || 3001;
 
+// Warn about insecure fallback secrets at startup
+const warnIfInsecure = () => {
+  const insecureJWT =
+    !process.env.JWT_SECRET || process.env.JWT_SECRET.length < 20;
+  const insecureAdmin =
+    !process.env.ADMIN_SECRET ||
+    process.env.ADMIN_SECRET === "234wknd-admin-secret";
+  if (insecureJWT) {
+    console.warn(
+      "⚠️  JWT_SECRET is missing or too short. Set a long random value in .env",
+    );
+  }
+  if (insecureAdmin) {
+    console.warn(
+      "⚠️  ADMIN_SECRET is using an insecure default. Set a strong value in .env",
+    );
+  }
+};
+
 // Initialize database connection and start server
 const startServer = async () => {
   try {
+    warnIfInsecure();
+
     // Connect to MongoDB
     await connectDB();
 
@@ -103,6 +146,7 @@ const startServer = async () => {
       console.log(`🚀 234 WKND Server running on port ${PORT}`);
       console.log(`📡 WebSocket server ready for connections`);
       console.log(`💾 MongoDB connected successfully`);
+      console.log(`🌐 Allowed origins: ${rawOrigins.join(", ")}`);
     });
   } catch (error) {
     console.error("Failed to start server:", error);
